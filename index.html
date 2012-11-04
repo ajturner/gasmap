@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<meta http-equiv="X-UA-Compatible" content="IE=7,IE=9" />
+		<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no" />
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		
+		<title>Mobile Web Map</title>
+		
+		<link rel="stylesheet" type="text/css" href="css/CustomTheme.css" />
+		<link rel="stylesheet" type="text/css" href="http://code.jquery.com/mobile/1.0.1/jquery.mobile.structure-1.0.1.min.css" />
+		<link rel="stylesheet" type="text/css" href="http://serverapi.arcgisonline.com/jsapi/arcgis/3.2/js/esri/dijit/css/Gallery.css" />
+    <link rel="stylesheet" type="text/css" href="http://serverapi.arcgisonline.com/jsapi/arcgis/3.2/js/esri/css/esri.css" />
+		<link rel="stylesheet" type="text/css" href="css/layout.css" />
+
+		<script type="text/javascript" src="http://serverapi.arcgisonline.com/jsapi/arcgis/?v=3.2compact"></script>
+		<script src="http://code.jquery.com/jquery-1.6.4.min.js"></script>
+		<script src="http://code.jquery.com/mobile/1.0.1/jquery.mobile-1.0.1.min.js"></script>
+
+		<script type="text/javascript">
+			dojo.require("esri.map");
+			dojo.require("esri.arcgis.utils");
+			dojo.require("esri.layers.FeatureLayer");
+			dojo.require("esri.tasks.locator");
+			dojo.require("esri.dijit.Legend");
+			dojo.require("esri.dijit.Gallery");
+			dojo.require("esri.dijit.BasemapGallery");
+			dojo.require("esri.dijit.PopupMobile");
+
+			var map;
+			var locator;
+			var currentItem;
+			var arcgisURL = "http://arcgis.com/sharing/content/items/";
+			var bingMapsKey;
+			var urlObject;
+			var popup;
+			dojo.ready(function() {
+				$(document).ready(jQueryReady);
+			});
+
+			function jQueryReady() {
+				//resize the map content section
+				$('#mapcontent').height($(window).height());
+
+				//onorientationchange doesn't always fire in a timely manner in Android so check for both orientationchange and resize
+				var supportsOrientationChange = "onorientationchange" in window, orientationEvent = supportsOrientationChange ? "orientationchange" : "resize";
+
+				window.addEventListener(orientationEvent, function() {
+					orientationChanged();
+				}, false);
+
+				urlObject = esri.urlToObject(document.location.href);
+				urlObject.query = urlObject.query || {};
+
+				var webmap = urlObject.query.webmap || "cb946a364c59411cb70a57c2adda5445";
+
+				bingMapsKey = urlObject.query.bingMapsKey || "Akt3ZoeZ089qyG3zWQZSWpwV3r864AHStal7Aon21-Fyxwq_KdydAH32LTwhieA8";
+
+				//initialize the geocoder
+				locator = new esri.tasks.Locator("http://tasks.arcgis.com/ArcGIS/rest/services/WorldLocator/GeocodeServer");
+				dojo.connect(locator, "onAddressToLocationsComplete", showResults);
+
+				//create the map using the webmap id
+				//create a mobile popup
+				popup = new esri.dijit.PopupMobile(null, dojo.create("div"));
+				var mapDeferred = esri.arcgis.utils.createMap(webmap, "map", {
+					mapOptions : {
+						slider : true,
+						infoWindow : popup,
+						nav : false,
+						wrapAround180 : true
+					},
+					ignorePopups : false,
+					bingMapsKey : bingMapsKey
+				});
+				mapDeferred.addCallback(function(response) {
+					map = response.map;
+
+					currentItem = response.itemInfo;
+					$("#webmapTitle").html(currentItem.item.title);
+
+					resizeMap();
+
+				});
+
+				$('#infoDialog').bind('pagebeforeshow', function(event, ui) {
+					$("#webmapTitleInfo").html(currentItem.item.title);
+					$("#snippet").html(currentItem.item.snippet);
+					$("#description").html(currentItem.item.description);
+					$("#mapThumbnail").attr("src", arcgisURL + currentItem.item.id + "/info/" + currentItem.item.thumbnail);
+				});
+				//add the legend
+				$('#legendDialog').bind('pagebeforeshow', function(event, ui) {
+					$(this).unbind(event);
+					var layerInfo = [];
+					dojo.forEach(currentItem.itemData.operationalLayers, function(layer) {
+						if((!layer.featureCollection) && (layer.layerObject)) {
+							layerInfo.push({
+								layer : layer.layerObject,
+								title : layer.title
+							});
+						}
+					});
+					if(layerInfo.length > 0) {
+						var legendDijit = new esri.dijit.Legend({
+							map : map,
+							layerInfos : layerInfo
+						}, "legendDiv");
+
+						legendDijit.startup();
+					} else {
+						$("#legendDiv").html("No operational layers");
+					}
+				});
+
+				//setup the basemap gallery
+				$('#detailDialog').bind('pagebeforeshow', function(event, ui) {
+					$(this).unbind(event);
+					$("#currentBasemap").html(currentItem.itemData.baseMap.title);
+					var basemaps = new esri.dijit.BasemapGallery({
+						showArcGISBasemaps : true,
+						map : map
+					});
+					dojo.connect(basemaps, "onLoad", function() {
+						items = $.map(basemaps.basemaps, function(basemap) {
+							return {
+								thumbnailUrl : basemap.thumbnailUrl,
+								id : basemap.id,
+								title : basemap.title
+							};
+						});
+
+						//display basemaps in the gallery
+						var params = {};
+						params.items = items;
+						params.thumbnailStyle = "small";
+						var gallery = new esri.dijit.Gallery(params, "galleryDiv");
+
+						dojo.connect(gallery, "onSelect", function(item) {
+							basemaps.select(item.id);
+							//close the dialog
+							$('#detailDialog').dialog('close');
+						});
+
+						gallery.startup();
+					});
+
+				});
+
+			}
+
+			//mark current location on map
+			function zoomToLocation(location) {
+				//clear existing graphics
+				map.graphics.clear();
+				$.mobile.hidePageLoadingMsg();
+				var pt = esri.geometry.geographicToWebMercator(new esri.geometry.Point(location.coords.longitude, location.coords.latitude));
+				map.centerAndZoom(pt, 13);
+				var symbol = new esri.symbol.PictureMarkerSymbol("images/bluedot.png", 40, 40);
+				map.graphics.add(new esri.Graphic(pt, symbol));
+			}
+
+			function locationError(error) {
+				switch (error.code) {
+					case error.PERMISSION_DENIED:
+						console.log("Location not provided");
+						break;
+					case error.POSITION_UNAVAILABLE:
+						console.log("Current location not available");
+						break;
+					case error.TIMEOUT:
+						console.log("Timeout");
+						break;
+					default:
+						console.log("unknown error");
+						break;
+				}
+			}
+
+			function getLocation() {
+				if(navigator.geolocation) {
+					$.mobile.showPageLoadingMsg();
+					//true hides the dialog
+					//if you want to track as the user moves setup navigator.geolocation.watchPostion
+					navigator.geolocation.getCurrentPosition(zoomToLocation, locationError);
+
+				}
+			}
+
+			function findLocation() {
+				var searchText = $("#search")[0].value;
+				//clear existing list results
+				$('#searchList li').remove();
+				map.graphics.clear();
+				var address = {
+					'SingleLine' : searchText
+				};
+				locator.addressToLocations(address, ["*"]);
+
+			}
+
+			function showResults(results) {
+				//create a pick list of results
+				$.each(results, function(i, result) {
+
+					var li = $('<li class="linklist"/>');
+					$('.linklist').click(function() {
+						addResult(result);
+					});
+
+					//create the list content
+					var content = "<a href='#'>" + result.address + "</a>";
+
+					li.append(content);
+					//add the list item to the feature type list
+					$('#searchList').append(li);
+				});
+				//refresh the featurelist so the jquery mobile style is applied
+				$('#searchList').listview('refresh');
+			}
+
+			function addResult(result) {
+				//clear any existing graphics
+				map.graphics.clear();
+				//add selected geocode result to map and zoom
+				var infoTemplate = new esri.InfoTemplate("Result", "${*}");
+				var r = Math.floor(Math.random() * 250);
+				var g = Math.floor(Math.random() * 100);
+				var b = Math.floor(Math.random() * 100);
+
+				var symbol = new esri.symbol.SimpleMarkerSymbol(esri.symbol.SimpleMarkerSymbol.STYLE_CIRCLE, 10, new esri.symbol.SimpleLineSymbol(esri.symbol.SimpleLineSymbol.STYLE_SOLID, new dojo.Color([r, g, b, 0.5]), 5), new dojo.Color([r, g, b, 0.9]));
+				var wmloc = esri.geometry.geographicToWebMercator(result.location);
+				var attr = {
+					"Address" : result.address
+				};
+
+				var graphic = new esri.Graphic(wmloc, symbol, attr, infoTemplate);
+
+				map.graphics.add(graphic);
+				//convert point to extent and expand a bit
+				var ptAttr = result.attributes;
+				var esriExtent = new esri.geometry.Extent(ptAttr.West_Lon, ptAttr.South_Lat, ptAttr.East_Lon, ptAttr.North_Lat, new esri.SpatialReference({
+					wkid : 4326
+				}));
+				var extent = esri.geometry.geographicToWebMercator(esriExtent);
+				map.setExtent(extent);
+				//close the dialog
+				$('#searchDialog').dialog('close');
+			}
+
+			function orientationChanged() {
+				resizeMap();
+			}
+
+			function resizeMap() {
+				if(map) {
+					//resize map section
+					$('#map').css("height", screen.height);
+					$('#map').css("width", "auto");
+
+					map.reposition();
+					map.resize();
+
+				}
+			}
+		</script>
+	</head>
+
+	<body>
+		<div data-role="page" id="mapPage" class="page-map">
+			<div data-role="header" data-theme='a'>
+				<h1 id="webmapTitle">ArcGIS.com Map</h1>
+				<a href="#infoDialog" id="info" data-rel="dialog" data-theme='b'
+				class="ui-btn-right" data-icon="info" data-iconpos="notext"></a>
+			</div>
+			<div data-role="content" id="mapcontent">
+				<div id="map"></div>
+			</div>
+			<!--Navbar-->
+			<div id="footer" data-role="footer" data-theme='b'>
+				<div data-role="navbar" class="customIcons">
+					<ul>
+						<li>
+							<a id="geolocate" data-icon="custom" href="#" onClick="getLocation();">Locate</a>
+						</li>
+						<li>
+							<a id="legend" data-icon="custom" href="#legendDialog" data-rel="dialog">Legend</a>
+						</li>
+						<li>
+							<a id="details" data-icon="custom" href="#detailDialog" data-rel="dialog">Basemap</a>
+						</li>
+						<li>
+							<a id="searchMap" data-icon="custom" href="#searchDialog" data-rel="dialog">Search</a>
+						</li>
+					</ul>
+				</div>
+			</div>
+		</div>
+		<!--Search Dialog-->
+		<div id="searchDialog" data-role="dialog">
+			<div data-role="header">
+				<h1><span>Search</span></h1>
+			</div>
+			<div data-role="content">
+				<div data-role="fieldcontain">
+					<label for="search">Search location:</label>
+					<input type="search" onKeyDown="if(event.keyCode === 13)findLocation();"
+					id="search" value="" />
+				</div>
+				<ul id="searchList" data-role="listview"></ul>
+			</div>
+		</div>
+		<!--Legend Dialog-->
+		<div id="legendDialog" data-role="dialog">
+			<div data-role="header">
+				<h1><span>Legend</span></h1>
+			</div>
+			<div data-role="content">
+				<div id="legendDiv"></div>
+			</div>
+		</div>
+		<!--Details Dialog-->
+		<div id="detailDialog" data-role="dialog">
+			<div data-role="header">
+				<h1><span>Map Content</span></h1>
+			</div>
+			<div data-role="content">
+				<div>
+					<b>Current Basemap:</b><span id="currentBasemap"></span>
+				</div>
+				<div id="galleryDiv"></div>
+			</div>
+		</div>
+		<!--Map Details Dialog-->
+		<div id="infoDialog" data-role="dialog">
+			<div data-role="header" data-theme='b'>
+				<h1><span id="webmapTitleInfo"></span></h1>
+			</div>
+			<div data-role="content">
+				<div id="contentDiv">
+					<div id="mapDetails">
+						<img id="mapThumbnail" style="float:left;padding-right:5px;" width="100px;height:67px;"
+						/>
+						<div id="snippet"></div>
+						<div id="description"></div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</body>
+</html>
